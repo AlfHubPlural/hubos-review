@@ -112,17 +112,81 @@ export function buildProgram() {
       }
     });
 
-  // update
+  // update (Story CICD-002-E — real bump command)
   program
     .command('update')
     .description('Bump installed gate to the latest available version')
-    .action(() => update());
+    .addOption(
+      new Option('--target <path>', 'Target repository directory (defaults to CWD)').default(null),
+    )
+    .addOption(
+      new Option('--bundle-version <slug>', 'Bundle version to install (defaults to v1)').default(
+        'v1',
+      ),
+    )
+    .addOption(
+      new Option('--dry-run', 'Show what would change without writing files').default(false),
+    )
+    .addOption(
+      new Option('--auto-update', 'Apply update without prompting (CI-friendly)').default(false),
+    )
+    .addOption(
+      new Option(
+        '--force-update',
+        'Overwrite local modifications (locally edited files will be lost)',
+      ).default(false),
+    )
+    .addOption(
+      new Option('--no-registry-check', 'Skip npm registry lookup (offline mode)').default(false),
+    )
+    .action(async (opts) => {
+      const rc = await update({
+        target: opts.target,
+        bundleVersion: opts.bundleVersion,
+        dryRun: opts.dryRun,
+        autoUpdate: opts.autoUpdate,
+        forceUpdate: opts.forceUpdate,
+        // Commander negates `--no-registry-check` automatically into
+        // `opts.registryCheck = false`. We translate back to our internal
+        // positive flag name to keep the option object explicit.
+        noRegistryCheck: opts.registryCheck === false,
+      });
+      if (rc !== 0) {
+        process.exit(rc);
+      }
+    });
 
-  // status
+  // status (Story CICD-002-E — real audit command)
   program
     .command('status')
-    .description('Show installed gate version vs latest available version')
-    .action(() => status());
+    .description('Show installed gate version + file integrity + branch protection')
+    .addOption(
+      new Option('--target <path>', 'Target repository directory (defaults to CWD)').default(null),
+    )
+    .addOption(
+      new Option('--bundle-version <slug>', 'Bundle version to compare against').default('v1'),
+    )
+    .addOption(new Option('--json', 'Emit machine-readable JSON output').default(false))
+    .addOption(
+      new Option('--no-registry-check', 'Skip npm registry lookup (offline mode)').default(false),
+    )
+    .addOption(
+      new Option('--branch <name>', 'Branch to probe for protection (defaults to main)').default(
+        'main',
+      ),
+    )
+    .action(async (opts) => {
+      const rc = await status({
+        target: opts.target,
+        bundleVersion: opts.bundleVersion,
+        json: opts.json,
+        noRegistryCheck: opts.registryCheck === false,
+        branch: opts.branch,
+      });
+      if (rc !== 0) {
+        process.exit(rc);
+      }
+    });
 
   // verify (Story CICD-002-C — real pre-flight check)
   program

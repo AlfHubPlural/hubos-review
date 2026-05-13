@@ -2,8 +2,8 @@
  * Public programmatic API for @hubplural/hubos-review.
  *
  * For now, exposes the CLI builder so consumers can embed it (rare —
- * primary use is the binary). All sub-commands remain stubs in v0.1.0
- * (Story CICD-002-A); real behavior lands in Stories B/C/D/E.
+ * primary use is the binary). All four sub-commands are real as of
+ * Story CICD-002-E (v0.4.0) — install, verify, status, update.
  */
 
 export { buildProgram, run } from './cli.js';
@@ -24,3 +24,15 @@ export {
   DEFAULT_CHECK_NAME,
 } from './lib/branch-protection.js';
 export { createTtyHelpers, defaultTty } from './lib/tty.js';
+export {
+  createRegistryClient,
+  defaultExec as defaultRegistryExec,
+  compareVersions,
+  parseSemver,
+} from './lib/registry.js';
+export {
+  diffInstalledVsBundle,
+  hasBundleChanges,
+  hasLocalModifications,
+  shortSha,
+} from './lib/diff.js';
