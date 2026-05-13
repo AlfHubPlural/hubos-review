@@ -1,5 +1,5 @@
 /**
- * Public programmatic API for @alfhubplural/hubos-review.
+ * Public programmatic API for @hubplural/hubos-review.
  *
  * For now, exposes the CLI builder so consumers can embed it (rare —
  * primary use is the binary). All sub-commands remain stubs in v0.1.0

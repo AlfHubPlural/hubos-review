@@ -3,7 +3,7 @@
 > Standalone CLI to install portable PR review gates (codex-gate, etc.) on any GitHub repo.
 > Part of the **hub-os ecosystem** by [Alfredo Carneiro Júnior](https://github.com/AlfHubPlural).
 
-[![npm](https://img.shields.io/npm/v/@alfhubplural/hubos-review/beta.svg)](https://www.npmjs.com/package/@alfhubplural/hubos-review)
+[![npm](https://img.shields.io/npm/v/@hubplural/hubos-review/beta.svg)](https://www.npmjs.com/package/@hubplural/hubos-review)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Node.js ≥ 20](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)](https://nodejs.org/)
 
@@ -26,7 +26,7 @@
 
 ```bash
 # Install globally (beta channel during MVP — D-002-11)
-npm install -g @alfhubplural/hubos-review@beta
+npm install -g @hubplural/hubos-review@beta
 
 # See available sub-commands
 hubos-review --help
@@ -49,7 +49,7 @@ If you already have the [AIOX framework](https://github.com/SynkraTech/aiox) ins
 | | `aiox` | `hubos-review` |
 |---|---|---|
 | **Scope** | AI-orchestrated full-stack development framework (agents, stories, workflows) | Installer for portable PR review gates on GitHub repos |
-| **Distributed via** | npm package `aiox` (or framework bundle) | npm package `@alfhubplural/hubos-review` |
+| **Distributed via** | npm package `aiox` (or framework bundle) | npm package `@hubplural/hubos-review` |
 | **Binary name** | `aiox` | `hubos-review` |
 | **Lifecycle** | Long-lived (drives the dev loop end-to-end) | Run once per repo (install) + occasional bumps (update/status) |
 | **Coexistence** | ✅ Both can be installed globally at the same time | ✅ Both can be installed globally at the same time |
@@ -122,8 +122,8 @@ node bin/hubos-review.js --help   # exercise the binary in-tree
 To exercise the published-package path locally:
 
 ```bash
-npm pack                                                    # → alfhubplural-hubos-review-0.1.0.tgz
-npm install -g ./alfhubplural-hubos-review-0.1.0.tgz
+npm pack                                                    # → hubplural-hubos-review-0.1.0.tgz
+npm install -g ./hubplural-hubos-review-0.1.0.tgz
 hubos-review --help
 ```
 
