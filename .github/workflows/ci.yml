@@ -43,5 +43,22 @@ jobs:
       - name: Smoke test (CLI --help)
         run: node ./bin/hubos-review.js --help
 
-      - name: Smoke test (install stub)
-        run: node ./bin/hubos-review.js install codex-gate
+      - name: Smoke test (install --dry-run in temp repo)
+        run: |
+          # Story B: install is a real command — exercise it against a throw-away
+          # git repo so the workflow does not pollute the checkout.
+          TARGET="$(mktemp -d)"
+          git -C "$TARGET" init -q
+          node ./bin/hubos-review.js install codex-gate --target "$TARGET" --dry-run
+          node ./bin/hubos-review.js install codex-gate --target "$TARGET"
+          test -f "$TARGET/.github/workflows/codex-gate.yml"
+          test -f "$TARGET/.aiox-core/development/tasks/qa-bot-loop.md"
+          test -f "$TARGET/.claude/rules/bot-review-integration.md"
+          test -f "$TARGET/.aiox/cicd-version"
+          # Idempotence — second run without --force must exit 0 without overwriting.
+          node ./bin/hubos-review.js install codex-gate --target "$TARGET"
+          # --force must reinstall cleanly.
+          node ./bin/hubos-review.js install codex-gate --target "$TARGET" --force
+
+      - name: Bundle integrity check
+        run: npm run sync-bundles:check

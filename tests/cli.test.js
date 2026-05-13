@@ -13,11 +13,25 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildProgram } from '../src/cli.js';
 import { install } from '../src/commands/install.js';
 import { update } from '../src/commands/update.js';
 import { status } from '../src/commands/status.js';
 import { verify } from '../src/commands/verify.js';
+
+/**
+ * Create a fresh non-git temp directory. Story B turned `install` into a real
+ * command that refuses non-git targets (AC-9), so dispatcher tests now pass
+ * --target=<git-dir> to exercise wiring without depending on process.cwd().
+ */
+function makeTempGitRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'hubos-review-cli-test-'));
+  mkdirSync(join(dir, '.git'), { recursive: true });
+  return dir;
+}
 
 /**
  * Parse argv synchronously through a fresh program. Captures stdout, stderr,
@@ -115,25 +129,66 @@ describe('hubos-review CLI dispatcher', () => {
     });
   });
 
-  describe('install stub (AC-4)', () => {
-    it('prints stub message and returns exit 0 with default gate', async () => {
-      const { stdout, exitCode } = await runCli(['install']);
-      expect(exitCode).toBe(0);
-      expect(stdout).toContain('install codex-gate');
-      expect(stdout).toContain('Story B');
-      expect(stdout).toContain('Not yet implemented');
+  describe('install command wiring (Story B — was stub in Story A)', () => {
+    /** @type {string[]} */
+    const tmpDirs = [];
+
+    function tmp() {
+      const d = makeTempGitRepo();
+      tmpDirs.push(d);
+      return d;
+    }
+
+    afterEach(() => {
+      while (tmpDirs.length > 0) {
+        try {
+          rmSync(tmpDirs.pop(), { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
     });
 
-    it('accepts explicit gate-name argument', async () => {
-      const { stdout, exitCode } = await runCli(['install', 'codex-gate']);
+    it('dispatcher wires --target through to install (clean repo, exit 0)', async () => {
+      const target = tmp();
+      const { exitCode, stdout } = await runCli(['install', 'codex-gate', '--target', target]);
       expect(exitCode).toBe(0);
-      expect(stdout).toContain('install codex-gate');
+      expect(stdout).toMatch(/installed successfully/);
     });
 
-    it('passes --force flag through to the stub message', async () => {
-      const { stdout, exitCode } = await runCli(['install', 'codex-gate', '--force']);
+    it('dispatcher wires --dry-run through (no writes, exit 0)', async () => {
+      const target = tmp();
+      const { exitCode, stdout } = await runCli([
+        'install',
+        'codex-gate',
+        '--target',
+        target,
+        '--dry-run',
+      ]);
       expect(exitCode).toBe(0);
-      expect(stdout).toContain('--force');
+      expect(stdout).toMatch(/DRY RUN/);
+      expect(stdout).toMatch(/No filesystem changes were made/);
+    });
+
+    it('dispatcher wires --force through (subsequent install reinstalls)', async () => {
+      const target = tmp();
+      await runCli(['install', 'codex-gate', '--target', target]);
+      const { exitCode, stdout } = await runCli([
+        'install',
+        'codex-gate',
+        '--target',
+        target,
+        '--force',
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stdout).toMatch(/reinstalled successfully/);
+    });
+
+    it('default gate is codex-gate when omitted', async () => {
+      const target = tmp();
+      const { exitCode, stdout } = await runCli(['install', '--target', target]);
+      expect(exitCode).toBe(0);
+      expect(stdout).toMatch(/codex-gate v1 installed successfully/);
     });
   });
 
@@ -176,6 +231,8 @@ describe('hubos-review CLI dispatcher', () => {
 
 describe('command handlers (direct unit tests)', () => {
   let logSpy;
+  /** @type {string[]} */
+  const dirsToCleanup = [];
 
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -183,16 +240,27 @@ describe('command handlers (direct unit tests)', () => {
 
   afterEach(() => {
     logSpy.mockRestore();
+    while (dirsToCleanup.length > 0) {
+      try {
+        rmSync(dirsToCleanup.pop(), { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
   });
 
-  it('install() returns 0 and points to Story B', () => {
-    const rc = install({ gate: 'codex-gate' });
+  it('install() returns 0 in a clean git repo (no longer a stub)', () => {
+    const target = makeTempGitRepo();
+    dirsToCleanup.push(target);
+    const rc = install({ gate: 'codex-gate', target });
     expect(rc).toBe(0);
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Story B'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('installed successfully'));
   });
 
-  it('install() with no args uses default gate', () => {
-    const rc = install();
+  it('install() default gate is codex-gate', () => {
+    const target = makeTempGitRepo();
+    dirsToCleanup.push(target);
+    const rc = install({ target });
     expect(rc).toBe(0);
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('codex-gate'));
   });
