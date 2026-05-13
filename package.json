@@ -1,0 +1,59 @@
+{
+  "name": "@alfhubplural/hubos-review",
+  "version": "0.1.0",
+  "description": "Standalone CLI to install portable PR review gates (codex-gate, etc.) on any GitHub repo. Part of the hub-os ecosystem.",
+  "type": "module",
+  "bin": {
+    "hubos-review": "./bin/hubos-review.js"
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "prepublishOnly": "npm run lint && npm test"
+  },
+  "keywords": [
+    "cli",
+    "github",
+    "code-review",
+    "pr-gate",
+    "codex",
+    "review-bot",
+    "hubos",
+    "ci-cd"
+  ],
+  "author": "Alfredo Carneiro Júnior <alfredo@hubplural.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/AlfHubPlural/hubos-review#readme",
+  "bugs": {
+    "url": "https://github.com/AlfHubPlural/hubos-review/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlfHubPlural/hubos-review.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.15.0",
+    "vitest": "^4.1.6"
+  }
+}
