@@ -30,6 +30,13 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { bundleDir, verifyBundleIntegrity, sha256File } from '../lib/bundle.js';
+import {
+  createDefaultGhCli,
+  detectOwnerRepo,
+  maybeConfigureBranchProtection,
+  DEFAULT_CHECK_NAME,
+} from '../lib/branch-protection.js';
+import { defaultTty } from '../lib/tty.js';
 
 /**
  * Exit codes are documented in the README install section.
@@ -37,6 +44,12 @@ import { bundleDir, verifyBundleIntegrity, sha256File } from '../lib/bundle.js';
 const EXIT = {
   OK: 0,
   USAGE: 1,
+  /**
+   * Exit 2: user passed conflicting flags (--auto-protect + --skip-protection).
+   * Distinct from USAGE so callers can distinguish "fatal usage error" from
+   * "ambiguous intent that the user must resolve". Story D AC-1.
+   */
+  CONFLICT: 2,
 };
 
 /**
@@ -204,11 +217,166 @@ export function install(opts = {}) {
   console.log(
     `.aiox/cicd-version ${existingState ? 'updated' : 'created'} (remember to git add and commit this file — D-002-8).`,
   );
-  console.log(
-    "Next: configure branch protection via 'hubos-review install codex-gate --auto-protect' (Story D)" +
-      " or run 'hubos-review verify' to check pre-flight status (Story C).",
-  );
+  if (opts.skipNextSteps !== true) {
+    console.log(
+      "Next: configure branch protection via 'hubos-review install codex-gate --auto-protect' (Story D)" +
+        " or run 'hubos-review verify' to check pre-flight status (Story C).",
+    );
+  }
   return EXIT.OK;
+}
+
+/**
+ * Async wrapper around `install()` that also handles branch protection
+ * (Story CICD-002-D). Returns a numeric exit code suitable for the CLI.
+ *
+ * Behavior:
+ *   1. Runs the synchronous `install(...)` first. If it returns a non-zero
+ *      code, propagates it immediately — branch protection is NOT attempted.
+ *   2. If the install was a no-op (already installed, no --force), branch
+ *      protection is STILL evaluated — the user may be re-running just to
+ *      configure protection after an earlier install that skipped it.
+ *   3. Decides skip/apply via `maybeConfigureBranchProtection` (matrix in
+ *      decideProtectionFlow).
+ *   4. Updates `.aiox/cicd-version` `gates.<gate>.branchProtection` field
+ *      when protection was applied successfully (AC-11).
+ *   5. ALWAYS returns 0 unless install itself failed or the user passed
+ *      conflicting flags (--auto-protect + --skip-protection → exit 2).
+ *
+ * Branch protection failures (403, 404, network) DO NOT fail the overall
+ * install — AC-9 graceful degradation. They log explanatory messages and
+ * continue. The bundle files remain installed.
+ *
+ * @param {object} [opts]   same as install(...) plus:
+ * @param {boolean} [opts.autoProtect]
+ * @param {boolean} [opts.skipProtection]
+ * @param {string}  [opts.branch]
+ * @param {string}  [opts.checkName]
+ * @param {object}  [opts.ghCli]     defaults to createDefaultGhCli()
+ * @param {object}  [opts.tty]       defaults to defaultTty
+ * @param {Function} [opts.detectOwnerRepoFn]  defaults to detectOwnerRepo
+ * @returns {Promise<number>} exit code
+ */
+export async function installWithProtection(opts = {}) {
+  // Step 1: run the synchronous install. Suppress the "Next steps" banner
+  // because we'll print a more targeted summary at the end.
+  const installRc = install({ ...opts, skipNextSteps: true });
+  if (installRc !== EXIT.OK) {
+    return installRc;
+  }
+
+  const cwd = opts.cwd ?? process.cwd();
+  const targetDir = resolve(opts.target ? opts.target : cwd);
+  const gate = opts.gate ?? 'codex-gate';
+
+  // Step 2: detect owner/repo for the target directory.
+  const detectFn = opts.detectOwnerRepoFn ?? detectOwnerRepo;
+  let ownerRepo = null;
+  try {
+    ownerRepo = await detectFn({ cwd: targetDir });
+  } catch {
+    ownerRepo = null;
+  }
+
+  // If we can't determine owner/repo, we can't talk to gh api. But the
+  // user might still have passed --skip-protection, which is a valid path.
+  if (!ownerRepo) {
+    // Honor explicit flag conflicts before we bail out — keeps the exit
+    // code matrix predictable.
+    if (opts.autoProtect && opts.skipProtection) {
+      console.error(
+        'hubos-review: Cannot use --auto-protect and --skip-protection together.',
+      );
+      return EXIT.CONFLICT;
+    }
+    if (opts.skipProtection) {
+      console.log('Skipping branch protection per --skip-protection flag.');
+      return EXIT.OK;
+    }
+    console.error(
+      'hubos-review: Could not determine GitHub owner/repo from the target.\n' +
+        '  The target must have an `origin` remote pointing at github.com.\n' +
+        '  Branch protection step skipped. Files were installed successfully.',
+    );
+    return EXIT.OK;
+  }
+
+  // Step 3: run the protection flow.
+  const ghCli = opts.ghCli ?? createDefaultGhCli();
+  const tty = opts.tty ?? defaultTty;
+
+  const flow = await maybeConfigureBranchProtection({
+    ghCli,
+    tty,
+    options: {
+      autoProtect: opts.autoProtect,
+      skipProtection: opts.skipProtection,
+      branch: opts.branch ?? 'main',
+      checkName: opts.checkName ?? DEFAULT_CHECK_NAME,
+    },
+    owner: ownerRepo.owner,
+    repo: ownerRepo.repo,
+  });
+
+  if (flow.outcome === 'conflict') {
+    return EXIT.CONFLICT;
+  }
+
+  // Step 4: stamp .aiox/cicd-version with branchProtection state when applied.
+  if (flow.outcome === 'applied' || flow.outcome === 'noop') {
+    try {
+      stampBranchProtectionResult({
+        targetDir,
+        gate,
+        result: flow.result,
+        now:
+          typeof opts.now === 'function'
+            ? opts.now()
+            : new Date().toISOString(),
+      });
+    } catch (err) {
+      // Non-fatal: the bundle is installed, branch protection is configured;
+      // we just couldn't write the stamp. Warn and continue.
+      console.error(
+        `hubos-review: branch protection applied but failed to update .aiox/cicd-version: ${err.message}`,
+      );
+    }
+  }
+
+  return EXIT.OK;
+}
+
+/**
+ * Mutate `.aiox/cicd-version` to record the branchProtection result on the
+ * specified gate. Pure file I/O — no network or process.
+ *
+ * @param {{ targetDir: string, gate: string, result: object, now: string }} args
+ */
+function stampBranchProtectionResult({ targetDir, gate, result, now }) {
+  const cicdVersionPath = join(targetDir, '.aiox', 'cicd-version');
+  if (!existsSync(cicdVersionPath)) {
+    // The install path always writes this file, so it should exist. Defensive.
+    return;
+  }
+  let state;
+  try {
+    state = JSON.parse(readFileSync(cicdVersionPath, 'utf8'));
+  } catch {
+    // Corrupted state — leave untouched. (Would already be a problem the user
+    // notices independently.)
+    return;
+  }
+  if (!state.gates) state.gates = {};
+  if (!state.gates[gate]) state.gates[gate] = {};
+  state.gates[gate].branchProtection = {
+    configured: true,
+    checkName: result.checkName,
+    branch: result.branch,
+    configuredAt: now,
+    previousContexts: result.previousContexts ?? [],
+    mergedContexts: result.mergedContexts ?? [],
+  };
+  writeFileSync(cicdVersionPath, JSON.stringify(state, null, 2) + '\n', 'utf8');
 }
 
 /**

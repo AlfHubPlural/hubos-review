@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
-import { install } from './commands/install.js';
+import { install, installWithProtection } from './commands/install.js';
 import { update } from './commands/update.js';
 import { status } from './commands/status.js';
 import { verify } from './commands/verify.js';
@@ -69,13 +69,43 @@ export function buildProgram() {
         'v1',
       ),
     )
-    .action((gate, opts) => {
-      const rc = install({
+    // ─── Story CICD-002-D — branch protection flags ─────────────────────
+    .addOption(
+      new Option('--auto-protect', 'Apply branch protection without prompting').default(false),
+    )
+    .addOption(
+      new Option('--skip-protection', 'Skip branch protection configuration entirely').default(
+        false,
+      ),
+    )
+    .addOption(
+      new Option('--branch <name>', 'Branch to protect (defaults to main)').default('main'),
+    )
+    .action(async (gate, opts) => {
+      // --dry-run intentionally bypasses branch protection: a dry run should
+      // never call gh api. Story B semantics preserved.
+      if (opts.dryRun) {
+        const rc = install({
+          gate,
+          force: opts.force,
+          dryRun: opts.dryRun,
+          target: opts.target,
+          version: opts.bundleVersion,
+        });
+        if (rc !== 0) {
+          process.exit(rc);
+        }
+        return;
+      }
+      const rc = await installWithProtection({
         gate,
         force: opts.force,
         dryRun: opts.dryRun,
         target: opts.target,
         version: opts.bundleVersion,
+        autoProtect: opts.autoProtect,
+        skipProtection: opts.skipProtection,
+        branch: opts.branch,
       });
       if (rc !== 0) {
         process.exit(rc);
