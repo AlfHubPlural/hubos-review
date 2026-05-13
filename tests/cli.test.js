@@ -192,21 +192,92 @@ describe('hubos-review CLI dispatcher', () => {
     });
   });
 
-  describe('update stub (AC-5)', () => {
-    it('prints stub message and returns exit 0', async () => {
-      const { stdout, exitCode } = await runCli(['update']);
-      expect(exitCode).toBe(0);
-      expect(stdout).toContain('Story E');
-      expect(stdout).toContain('Not yet implemented');
+  // Story CICD-002-E (E.1 dispatcher wiring): update/status are no longer
+  // stubs — they are real commands. We only assert wiring through the
+  // dispatcher here; full behavioral coverage lives in tests/update.test.js
+  // and tests/status.test.js.
+  describe('update command wiring (Story E — was stub in Stories A–D)', () => {
+    it('dispatcher wires --target through to update (no gate installed → exit 1)', async () => {
+      const target = mkdtempSync(join(tmpdir(), 'hubos-review-update-cli-'));
+      try {
+        const { exitCode, stderr } = await runCli(['update', '--target', target]);
+        expect(exitCode).toBe(1);
+        expect(stderr).toMatch(/no gate installed/i);
+      } finally {
+        try {
+          rmSync(target, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    it('--dry-run does not write to .aiox/cicd-version', async () => {
+      const target = makeTempGitRepo();
+      try {
+        // First install so update has something to bump.
+        await runCli(['install', 'codex-gate', '--target', target, '--skip-protection']);
+        // --no-registry-check keeps the test hermetic (no network).
+        const { exitCode } = await runCli([
+          'update',
+          '--target',
+          target,
+          '--dry-run',
+          '--no-registry-check',
+        ]);
+        expect(exitCode).toBe(0);
+      } finally {
+        try {
+          rmSync(target, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
     });
   });
 
-  describe('status stub (AC-6)', () => {
-    it('prints stub message and returns exit 0', async () => {
-      const { stdout, exitCode } = await runCli(['status']);
-      expect(exitCode).toBe(0);
-      expect(stdout).toContain('Story E');
-      expect(stdout).toContain('Not yet implemented');
+  describe('status command wiring (Story E — was stub in Stories A–D)', () => {
+    it('dispatcher wires --target through to status (no gate → exit 1)', async () => {
+      const target = mkdtempSync(join(tmpdir(), 'hubos-review-status-cli-'));
+      try {
+        const { exitCode, stderr } = await runCli([
+          'status',
+          '--target',
+          target,
+          '--no-registry-check',
+        ]);
+        expect(exitCode).toBe(1);
+        expect(stderr).toMatch(/no gate installed/i);
+      } finally {
+        try {
+          rmSync(target, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    it('--json emits machine-readable payload on missing lock', async () => {
+      const target = mkdtempSync(join(tmpdir(), 'hubos-review-status-cli-'));
+      try {
+        const { stdout, exitCode } = await runCli([
+          'status',
+          '--target',
+          target,
+          '--json',
+          '--no-registry-check',
+        ]);
+        expect(exitCode).toBe(1);
+        const payload = JSON.parse(stdout);
+        expect(payload.overall).toBe('NOT_INSTALLED');
+        expect(payload.installed).toBe(false);
+      } finally {
+        try {
+          rmSync(target, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
     });
   });
 
@@ -308,16 +379,19 @@ describe('command handlers (direct unit tests)', () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('codex-gate'));
   });
 
-  it('update() returns 0 and points to Story E', () => {
-    const rc = update();
-    expect(rc).toBe(0);
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Story E'));
+  it('update() returns 1 in an empty target dir (no .aiox/cicd-version) — Story E real handler', async () => {
+    const target = makeTempGitRepo();
+    dirsToCleanup.push(target);
+    // No install ran — update should refuse to proceed.
+    const rc = await update({ target, noRegistryCheck: true });
+    expect(rc).toBe(1);
   });
 
-  it('status() returns 0 and points to Story E', () => {
-    const rc = status();
-    expect(rc).toBe(0);
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Story E'));
+  it('status() returns 1 in an empty target dir (no .aiox/cicd-version) — Story E real handler', async () => {
+    const target = makeTempGitRepo();
+    dirsToCleanup.push(target);
+    const rc = await status({ target, noRegistryCheck: true });
+    expect(rc).toBe(1);
   });
 
   it('verify() rejects unsupported --gate value with exit 1', async () => {

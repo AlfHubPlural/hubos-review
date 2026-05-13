@@ -324,4 +324,25 @@ describe('install command', () => {
       expect(existsSync(join(root, 'bundles', 'codex-gate', 'v1', 'manifest.json'))).toBe(true);
     });
   });
+
+  // ─── Story CICD-002-E AC-12 — Fix OBS-D-1 (early-exit) ─────────────────
+  // The fix lives in installWithProtection() (src/commands/install.js).
+  // This test stays in install.test.js because it asserts that the SYNC
+  // install() function continues to behave correctly when called directly —
+  // i.e. the early-exit is a wrapper-level concern that does NOT regress
+  // any of the Story B/Story D scenarios that exercise install() in isolation.
+  describe('install() (sync) regression after Story E OBS-D-1 fix', () => {
+    it('synchronous install() is unaffected by Story E early-exit fix', () => {
+      const target = tmp();
+      // The install() function does not know about --auto-protect /
+      // --skip-protection flags; those are wrapper-level concerns. Story
+      // E's early-exit fix lives in installWithProtection() and does NOT
+      // change install() itself. We assert the canonical happy path
+      // (install → 3 files + lock file) still works to detect regressions.
+      const rc = install({ gate: 'codex-gate', target });
+      expect(rc).toBe(0);
+      expect(existsSync(join(target, '.github', 'workflows', 'codex-gate.yml'))).toBe(true);
+      expect(existsSync(join(target, '.aiox', 'cicd-version'))).toBe(true);
+    });
+  });
 });

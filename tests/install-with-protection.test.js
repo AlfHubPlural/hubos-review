@@ -138,7 +138,7 @@ describe('installWithProtection (Story D integration)', () => {
     expect(cicd.gates['codex-gate'].branchProtection.mergedContexts).toEqual(['codex-review-gate']);
   });
 
-  it('AC-1: --auto-protect + --skip-protection → exit 2 (conflict)', async () => {
+  it('AC-1: --auto-protect + --skip-protection → exit 2 (conflict) — Story E fix OBS-D-1: early-exit BEFORE any side effect', async () => {
     const target = tmp();
     const ghCli = makeFakeGhCli({});
     const rc = await installWithProtection({
@@ -151,10 +151,15 @@ describe('installWithProtection (Story D integration)', () => {
       detectOwnerRepoFn: fakeDetectFn({ owner: 'foo', repo: 'bar' }),
     });
     expect(rc).toBe(2);
-    // Bundle WAS still installed (install ran before flag conflict was detected
-    // — Story B's install is synchronous and idempotent, so this is fine).
-    expect(existsSync(join(target, '.github', 'workflows', 'codex-gate.yml'))).toBe(true);
-    // But no PUT happened.
+    // Story E AC-12 (Fix OBS-D-1): bundle MUST NOT be installed when flag
+    // conflict is detected. Early-exit validation runs BEFORE the synchronous
+    // install() call, so the filesystem stays untouched.
+    expect(existsSync(join(target, '.github', 'workflows', 'codex-gate.yml'))).toBe(false);
+    expect(existsSync(join(target, '.aiox-core', 'development', 'tasks', 'qa-bot-loop.md'))).toBe(false);
+    expect(existsSync(join(target, '.claude', 'rules', 'bot-review-integration.md'))).toBe(false);
+    expect(existsSync(join(target, '.aiox', 'cicd-version'))).toBe(false);
+    // And of course no gh api call happened.
+    expect(ghCli.calls.get).toHaveLength(0);
     expect(ghCli.calls.put).toHaveLength(0);
   });
 
