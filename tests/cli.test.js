@@ -210,12 +210,55 @@ describe('hubos-review CLI dispatcher', () => {
     });
   });
 
-  describe('verify stub (AC-7)', () => {
-    it('prints stub message and returns exit 0', async () => {
-      const { stdout, exitCode } = await runCli(['verify']);
-      expect(exitCode).toBe(0);
-      expect(stdout).toContain('Story C');
-      expect(stdout).toContain('Not yet implemented');
+  describe('verify command wiring (Story C — was stub in Story A)', () => {
+    it('--json flag renders machine-readable output', async () => {
+      // Use a temp non-git dir so verify exits early via C2 FAIL (no network).
+      // The CLI dispatcher hands `--target` straight to verify(...), so we
+      // exercise the full flag-wiring path without needing gh authentication.
+      const target = mkdtempSync(join(tmpdir(), 'hubos-review-verify-cli-'));
+      try {
+        const { stdout, exitCode } = await runCli([
+          'verify',
+          '--json',
+          '--target',
+          target,
+        ]);
+        // C1 will hit gh; C2 fails (no .git/). Exit may be 0 or 1 depending
+        // on whether gh is available — we only assert the JSON contract.
+        expect([0, 1]).toContain(exitCode);
+        const payload = JSON.parse(stdout);
+        expect(payload).toHaveProperty('checks');
+        expect(payload).toHaveProperty('overall');
+        expect(payload.checks).toHaveLength(8);
+        expect(payload.checks[0].id).toBe('C1');
+      } finally {
+        try {
+          rmSync(target, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    });
+
+    it('--gate=foo (unsupported) exits with code 1', async () => {
+      const target = mkdtempSync(join(tmpdir(), 'hubos-review-verify-cli-'));
+      try {
+        const { exitCode, stderr } = await runCli([
+          'verify',
+          '--gate',
+          'foo-gate',
+          '--target',
+          target,
+        ]);
+        expect(exitCode).toBe(1);
+        expect(stderr).toMatch(/codex-gate/);
+      } finally {
+        try {
+          rmSync(target, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
     });
   });
 
@@ -277,9 +320,12 @@ describe('command handlers (direct unit tests)', () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Story E'));
   });
 
-  it('verify() returns 0 and points to Story C', () => {
-    const rc = verify();
-    expect(rc).toBe(0);
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Story C'));
+  it('verify() rejects unsupported --gate value with exit 1', async () => {
+    const rc = await verify({ gate: 'foo-gate', json: true });
+    expect(rc).toBe(1);
+    // verify writes the JSON to console.log when --json is set, even on error
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Only \'codex-gate\' is supported'),
+    );
   });
 });
