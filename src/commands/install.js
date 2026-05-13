@@ -258,6 +258,22 @@ export function install(opts = {}) {
  * @returns {Promise<number>} exit code
  */
 export async function installWithProtection(opts = {}) {
+  // ─── FIX OBS-D-1 (Story CICD-002-E AC-12): early-exit flag conflict ──
+  // Validate mutually-exclusive flags BEFORE any side effects. The Story D
+  // gate flagged that the original ordering ran install() first (which
+  // wrote 3 files + .aiox/cicd-version) and only THEN detected the flag
+  // conflict via maybeConfigureBranchProtection — leaving the target dir
+  // in an unexpected partially-installed state on exit 2.
+  // The check below is intentionally redundant with the one inside
+  // maybeConfigureBranchProtection (which we keep for defense-in-depth
+  // when callers invoke that helper directly).
+  if (opts.autoProtect && opts.skipProtection) {
+    console.error(
+      'hubos-review: Cannot use --auto-protect and --skip-protection together.',
+    );
+    return EXIT.CONFLICT;
+  }
+
   // Step 1: run the synchronous install. Suppress the "Next steps" banner
   // because we'll print a more targeted summary at the end.
   const installRc = install({ ...opts, skipNextSteps: true });
