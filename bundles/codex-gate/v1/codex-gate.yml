@@ -1,0 +1,292 @@
+name: Codex Review Gate
+
+# CICD-A — Codex Bot Review Gate
+# CICD-F (2026-05-11) — Migrated from REST Statuses API to GitHub Checks API.
+#
+# Detects P1/P2/P3 suggestions from chatgpt-codex-connector[bot] and gates merge.
+# - P1+P2 → check-run conclusion=failure (blocks merge)
+# - P3    → check-run conclusion=success + GitHub Issue (label: cicd-p3-backlog)
+# - clean → check-run conclusion=success (bot reaction +1 on PR)
+# - timeout (5min, no bot signal) → check-run conclusion=neutral (NATIVE, no description workaround)
+#
+# Dual-trigger justified by empirical discovery (Task A.1, 51 comments inspected):
+# bot does NOT submit a review when clean — only adds reaction +1 on the PR.
+# pull_request_review alone would leave clean PRs eternally pending.
+#
+# workflow_dispatch added in CICD-F (F.2.5) for manual pre-merge validation (F.2.8)
+# and to populate the Check Run in repo history for branch protection UI selection (F.6.0).
+#
+# Check Run name (constant): codex-review-gate
+# Referenced by branch protection rule on main (Task A.3 / F.6).
+
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to validate (for manual pre-merge testing — CICD-F F.2.8)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  checks: write              # CICD-F: native Checks API publishing (replaces statuses: write)
+  issues: write              # P3 backlog issue creation (idempotent)
+  pull-requests: read        # PR/review/comment reads
+
+jobs:
+  parse-codex-review:
+    # Runs only when the Codex bot submits a review (pull_request_review event).
+    # workflow_dispatch is handled by clean-or-timeout for end-to-end manual validation.
+    if: github.event_name == 'pull_request_review' && github.event.review.user.login == 'chatgpt-codex-connector[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch Codex inline comments scoped to this review
+        run: |
+          # LL-2 (preserved): use review-scoped endpoint to avoid stale comments
+          # from previous commits poisoning new reviews. Endpoint returns ONLY
+          # comments belonging to the review that triggered this workflow run.
+          # Empirically validated on PR #99 review 4253036883 (2 comments).
+          gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews/${{ github.event.review.id }}/comments" \
+            --paginate \
+            --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]")' > codex-comments.jsonl
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Parse priorities and decide gate
+        id: parse
+        run: |
+          # Parser empirically validated against 51 real comments → 100% coverage
+          # (25 P1, 26 P2, 0 P3 observed in PRs #69-#98)
+          if [ ! -s codex-comments.jsonl ]; then
+            P1_COUNT=0; P2_COUNT=0; P3_COUNT=0
+          else
+            P1_COUNT=$(jq -r 'select(.body | test("P1\\s*Badge|img\\.shields\\.io/badge/P1-"; "i")) | .id' codex-comments.jsonl | wc -l | tr -d ' ')
+            P2_COUNT=$(jq -r 'select(.body | test("P2\\s*Badge|img\\.shields\\.io/badge/P2-"; "i")) | .id' codex-comments.jsonl | wc -l | tr -d ' ')
+            P3_COUNT=$(jq -r 'select(.body | test("P3\\s*Badge|img\\.shields\\.io/badge/P3-"; "i")) | .id' codex-comments.jsonl | wc -l | tr -d ' ')
+          fi
+
+          echo "p1_count=$P1_COUNT" >> $GITHUB_OUTPUT
+          echo "p2_count=$P2_COUNT" >> $GITHUB_OUTPUT
+          echo "p3_count=$P3_COUNT" >> $GITHUB_OUTPUT
+
+          TOTAL_BLOCKING=$((P1_COUNT + P2_COUNT))
+          if [ "$TOTAL_BLOCKING" -gt 0 ]; then
+            echo "conclusion=failure" >> $GITHUB_OUTPUT
+            echo "title=Codex review: $P1_COUNT P1 + $P2_COUNT P2 blocking suggestions" >> $GITHUB_OUTPUT
+            echo "summary=$P1_COUNT P1 + $P2_COUNT P2 blocking suggestions" >> $GITHUB_OUTPUT
+          else
+            echo "conclusion=success" >> $GITHUB_OUTPUT
+            if [ "$P3_COUNT" -gt 0 ]; then
+              echo "title=Codex review: no blocking issues ($P3_COUNT P3 logged)" >> $GITHUB_OUTPUT
+              echo "summary=No blocking issues; $P3_COUNT P3 logged to backlog" >> $GITHUB_OUTPUT
+            else
+              echo "title=Codex review: no blocking suggestions" >> $GITHUB_OUTPUT
+              echo "summary=No blocking suggestions" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Ensure cicd-p3-backlog label exists (idempotent)
+        if: steps.parse.outputs.p3_count != '0'
+        run: |
+          gh label create cicd-p3-backlog \
+            --color "0E8A16" \
+            --description "Codex P3 (LOW) suggestions auto-collected from PRs" \
+            --force || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create P3 backlog Issue (idempotent)
+        if: steps.parse.outputs.p3_count != '0'
+        run: |
+          # Idempotency: if an open issue for this PR already exists, append a comment
+          EXISTING=$(gh issue list \
+            --label cicd-p3-backlog \
+            --state open \
+            --search "PR #${{ github.event.pull_request.number }} in:title" \
+            --json number \
+            --jq '.[0].number // empty')
+
+          # Build body listing P3 suggestions (first line of each body + comment URL)
+          BODY=$(jq -r 'select(.body | test("P3\\s*Badge|img\\.shields\\.io/badge/P3-"; "i")) | "- [P3] \(.body | split("\n")[0] | gsub("\\*\\*"; "")) — [comment](\(.html_url))"' codex-comments.jsonl)
+
+          if [ -z "$BODY" ]; then
+            echo "No P3 comments parseable, skipping issue creation"
+            exit 0
+          fi
+
+          ISSUE_BODY=$(printf "Codex P3 (LOW) suggestions from PR #%s:\n\n%s\n\nRefs PR #%s" \
+            "${{ github.event.pull_request.number }}" "$BODY" "${{ github.event.pull_request.number }}")
+
+          if [ -n "$EXISTING" ]; then
+            COMMENT_BODY=$(printf "Re-run on commit %s:\n\n%s" "${{ github.event.pull_request.head.sha }}" "$BODY")
+            gh issue comment "$EXISTING" --body "$COMMENT_BODY"
+          else
+            gh issue create \
+              --title "[cicd-p3-backlog] P3 suggestions from PR #${{ github.event.pull_request.number }}" \
+              --label cicd-p3-backlog \
+              --body "$ISSUE_BODY"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Check Run (codex-review-gate)
+        run: |
+          # CICD-F: migrated from REST Statuses API (POST /statuses/{sha})
+          # to GitHub Checks API (POST /check-runs).
+          # - name MUST be exactly "codex-review-gate" (branch protection contract — F.2.4)
+          # - status="completed" + conclusion mapped from parser verdict
+          # - output.summary supports markdown (65535 char limit, vs 140 in old description)
+          # Idempotency note: POST creates a new check-run on each run; branch protection
+          # evaluates the latest check-run with matching name (matches prior Statuses behaviour).
+          SUMMARY=$(printf "**Codex Review Gate verdict**\n\n- P1 (CRITICAL): %s\n- P2 (HIGH): %s\n- P3 (LOW, non-blocking): %s\n\n[View PR](%s)" \
+            "${{ steps.parse.outputs.p1_count }}" \
+            "${{ steps.parse.outputs.p2_count }}" \
+            "${{ steps.parse.outputs.p3_count }}" \
+            "${{ github.event.pull_request.html_url }}")
+
+          gh api -X POST "repos/${{ github.repository }}/check-runs" \
+            -f name="codex-review-gate" \
+            -f head_sha="${{ github.event.pull_request.head.sha }}" \
+            -f status="completed" \
+            -f conclusion="${{ steps.parse.outputs.conclusion }}" \
+            -f details_url="${{ github.event.pull_request.html_url }}" \
+            -f "output[title]=${{ steps.parse.outputs.title }}" \
+            -f "output[summary]=$SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Job summary
+        run: |
+          echo "## Codex Review Gate — Conclusion: ${{ steps.parse.outputs.conclusion }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **P1 (CRITICAL):** ${{ steps.parse.outputs.p1_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **P2 (HIGH):** ${{ steps.parse.outputs.p2_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **P3 (LOW, non-blocking):** ${{ steps.parse.outputs.p3_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.parse.outputs.p3_count }}" != "0" ]; then
+            echo "P3 suggestions logged to GitHub Issues (label \`cicd-p3-backlog\`)" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ steps.parse.outputs.conclusion }}" = "failure" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Blocking suggestions (P1/P2)" >> $GITHUB_STEP_SUMMARY
+            jq -r 'select(.body | test("P[12]\\s*Badge|img\\.shields\\.io/badge/P[12]-"; "i")) | "- \(.body | split("\n")[0] | gsub("\\*\\*"; "")) — [\(.path):L\(.line // 0)](\(.html_url))"' codex-comments.jsonl >> $GITHUB_STEP_SUMMARY
+          fi
+
+  clean-or-timeout:
+    # Handles fresh PR events (no review yet) AND manual workflow_dispatch (F.2.8 / F.6.0).
+    # Resolves PR data from input when triggered manually.
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve PR context (pull_request OR workflow_dispatch)
+        id: pr
+        run: |
+          # CICD-F (F.2.5/F.2.8): unified PR resolution for both event types.
+          # - pull_request: use github.event.pull_request fields directly
+          # - workflow_dispatch: fetch PR via gh api using input pr_number
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${{ github.event.inputs.pr_number }}"
+            DATA=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" \
+              --jq '{head_sha: .head.sha, html_url: .html_url}')
+            HEAD_SHA=$(echo "$DATA" | jq -r '.head_sha')
+            HTML_URL=$(echo "$DATA" | jq -r '.html_url')
+          else
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            HTML_URL="${{ github.event.pull_request.html_url }}"
+          fi
+          echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "head_sha=$HEAD_SHA" >> $GITHUB_OUTPUT
+          echo "html_url=$HTML_URL" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish initial Check Run (pending — in_progress)
+        run: |
+          # CICD-F: migrated initial "pending" status from Statuses API to Checks API.
+          # status="in_progress" is the Checks API equivalent of state="pending".
+          # No conclusion field (set later when status="completed").
+          gh api -X POST "repos/${{ github.repository }}/check-runs" \
+            -f name="codex-review-gate" \
+            -f head_sha="${{ steps.pr.outputs.head_sha }}" \
+            -f status="in_progress" \
+            -f details_url="${{ steps.pr.outputs.html_url }}" \
+            -f "output[title]=Awaiting Codex review" \
+            -f "output[summary]=Awaiting Codex review (5min timeout per epic convention)..."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for Codex (5 minutes per epic convention)
+        run: sleep 300
+
+      - name: Re-check Codex activity
+        id: recheck
+        run: |
+          HEAD_SHA="${{ steps.pr.outputs.head_sha }}"
+          PR_NUMBER="${{ steps.pr.outputs.number }}"
+
+          # LL-3 (preserved): filter reviews by commit_id == HEAD_SHA so that
+          # reviews for previous commits (already addressed in fix-up flow) do NOT
+          # short-circuit this job into verdict=skip and leave the new SHA pending forever.
+          # Empirically validated on PR #99: reviews[].commit_id matches pulls.head.sha.
+          REVIEW_COUNT=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews" \
+            --jq "[.[] | select(.user.login==\"chatgpt-codex-connector[bot]\" and .commit_id==\"${HEAD_SHA}\")] | length")
+
+          if [ "$REVIEW_COUNT" -gt 0 ]; then
+            # Review for the CURRENT head SHA exists — parse-codex-review job will handle it.
+            echo "verdict=skip" >> $GITHUB_OUTPUT
+            echo "title=Review handled by parse-codex-review job" >> $GITHUB_OUTPUT
+            echo "summary=Review handled by parse-codex-review job" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 2. Bot reaction +1? (clean case — confirmed empirically in PR #91)
+          PLUS_ONE=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/reactions" \
+            --jq '[.[] | select(.user.login=="chatgpt-codex-connector[bot]" and .content=="+1")] | length')
+
+          if [ "$PLUS_ONE" -gt 0 ]; then
+            echo "conclusion=success" >> $GITHUB_OUTPUT
+            echo "title=Codex approved (no suggestions)" >> $GITHUB_OUTPUT
+            echo "summary=Codex approved (no suggestions) — reaction +1 on PR" >> $GITHUB_OUTPUT
+          else
+            # 3. Bot silent → conclusion=neutral (CICD-F: NATIVE, no description workaround).
+            # LL-4 (CICD-A) resolved by CICD-F: Checks API supports `neutral` natively, so the
+            # description-substring contract ("(neutral)") is no longer required.
+            echo "conclusion=neutral" >> $GITHUB_OUTPUT
+            echo "title=Codex timeout (neutral — non-blocking)" >> $GITHUB_OUTPUT
+            echo "summary=Codex did not respond within 5 minutes (neutral — non-blocking)" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish final Check Run (completed)
+        if: steps.recheck.outputs.verdict != 'skip'
+        run: |
+          # CICD-F: status="completed" + conclusion mapped from recheck verdict.
+          # - conclusion=success → bot reaction +1 (clean)
+          # - conclusion=neutral → bot silent for 5 minutes (NATIVE, replaces LL-4 workaround)
+          gh api -X POST "repos/${{ github.repository }}/check-runs" \
+            -f name="codex-review-gate" \
+            -f head_sha="${{ steps.pr.outputs.head_sha }}" \
+            -f status="completed" \
+            -f conclusion="${{ steps.recheck.outputs.conclusion }}" \
+            -f details_url="${{ steps.pr.outputs.html_url }}" \
+            -f "output[title]=${{ steps.recheck.outputs.title }}" \
+            -f "output[summary]=${{ steps.recheck.outputs.summary }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Job summary (timeout/clean)
+        if: steps.recheck.outputs.verdict != 'skip'
+        run: |
+          echo "## Codex Review Gate — ${{ steps.recheck.outputs.summary }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Conclusion: ${{ steps.recheck.outputs.conclusion }} (non-blocking when neutral/success)" >> $GITHUB_STEP_SUMMARY

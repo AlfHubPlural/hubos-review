@@ -1,0 +1,33 @@
+{
+  "bundle": "codex-gate",
+  "bundleVersion": "v1",
+  "sourceRepo": "AlfHubPlural/hub-os",
+  "createdAt": "2026-05-13T00:00:00Z",
+  "description": "Codex Review Gate — portable bundle of GitHub Actions workflow + AIOX task + Claude rule. Sources are byte-identical copies from the hub-os repo as of the createdAt timestamp.",
+  "files": [
+    {
+      "name": "codex-gate.yml",
+      "bundlePath": "codex-gate.yml",
+      "targetPath": ".github/workflows/codex-gate.yml",
+      "sourcePath": ".github/workflows/codex-gate.yml",
+      "sha256": "sha256:14ad66b19a5ce552a2569f66b48b2b926cbba74bc6d9c26ef5dd076e45eb207f",
+      "bytes": 15205
+    },
+    {
+      "name": "qa-bot-loop.md",
+      "bundlePath": "qa-bot-loop.md",
+      "targetPath": ".aiox-core/development/tasks/qa-bot-loop.md",
+      "sourcePath": ".aiox-core/development/tasks/qa-bot-loop.md",
+      "sha256": "sha256:5d2a806624129cf2d74f6c4d8bd335ec5e9c3a0bb350c0fa134bd39c6f6a4b06",
+      "bytes": 20657
+    },
+    {
+      "name": "bot-review-integration.md",
+      "bundlePath": "bot-review-integration.md",
+      "targetPath": ".claude/rules/bot-review-integration.md",
+      "sourcePath": ".claude/rules/bot-review-integration.md",
+      "sha256": "sha256:084d9192b839e4b80ce55d3b11ed200f1fbc1a129ce4a8a480c91b8eaeab9af9",
+      "bytes": 15942
+    }
+  ]
+}
