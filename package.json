@@ -1,6 +1,6 @@
 {
   "name": "@hubplural/hubos-review",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Standalone CLI to install portable PR review gates (codex-gate, etc.) on any GitHub repo. Part of the hub-os ecosystem.",
   "type": "module",
   "bin": {
@@ -13,6 +13,7 @@
   "files": [
     "bin/",
     "src/",
+    "bundles/",
     "README.md",
     "LICENSE"
   ],
@@ -21,7 +22,9 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "prepublishOnly": "npm run lint && npm test"
+    "sync-bundles": "node scripts/sync-bundles.mjs",
+    "sync-bundles:check": "node scripts/sync-bundles.mjs --check",
+    "prepublishOnly": "npm run lint && npm test && npm run sync-bundles:check"
   },
   "keywords": [
     "cli",
