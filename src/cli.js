@@ -124,11 +124,37 @@ export function buildProgram() {
     .description('Show installed gate version vs latest available version')
     .action(() => status());
 
-  // verify
+  // verify (Story CICD-002-C — real pre-flight check)
   program
     .command('verify')
     .description('Run pre-flight checks (gh auth, GitHub App, repo state)')
-    .action(() => verify());
+    .addOption(new Option('--json', 'Emit machine-readable JSON output').default(false))
+    .addOption(
+      new Option('--gate <name>', 'Gate name to verify (only codex-gate in MVP)').default(
+        'codex-gate',
+      ),
+    )
+    .addOption(
+      new Option('--target <path>', 'Target repository directory (defaults to CWD)').default(null),
+    )
+    .addOption(
+      new Option('--branch <name>', 'Protected branch name to check').default('main'),
+    )
+    .addOption(
+      new Option('--bundle-version <slug>', 'Bundle version to compare against').default('v1'),
+    )
+    .action(async (opts) => {
+      const rc = await verify({
+        json: opts.json,
+        gate: opts.gate,
+        target: opts.target,
+        branch: opts.branch,
+        bundleVersion: opts.bundleVersion,
+      });
+      if (rc !== 0) {
+        process.exit(rc);
+      }
+    });
 
   // Unknown sub-command handler — commander emits 'command:*' before exiting.
   // We override the exit code via configureOutput + exitOverride to deliver
