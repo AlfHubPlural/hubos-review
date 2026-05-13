@@ -18,7 +18,7 @@
 | `install codex-gate` | Copies 3 frozen artifacts + writes `.aiox/cicd-version` + (Story D) configures branch protection | ✅ Story B (v0.2.0) + Story D (v0.3.0) |
 | `update` | Prints stub message, exit 0 | [Story E](#roadmap) |
 | `status` | Prints stub message, exit 0 | [Story E](#roadmap) |
-| `verify` | Prints stub message, exit 0 | [Story C](#roadmap) |
+| `verify` | Runs 8 pre-flight checks with severity-based exit codes (CRITICAL/HIGH FAIL → exit 1) | ✅ Story C (v0.3.0) |
 
 ---
 
@@ -105,6 +105,73 @@ No filesystem changes were made.
 | 0 | Success, dry-run, already-installed (idempotence), or branch protection skipped/declined |
 | 1 | Target is not a git repo, bundle is missing/corrupt, or unexpected filesystem error |
 | 2 | Conflicting flags: `--auto-protect` AND `--skip-protection` both passed (Story D) |
+
+---
+
+## Verify before install (Story C)
+
+`hubos-review verify` runs an **8-check pre-flight** against the target repo before you commit to running `install`. It is a read-only diagnostic — it never writes to the filesystem and never modifies anything on GitHub.
+
+```bash
+hubos-review verify                    # human-readable ASCII table
+hubos-review verify --json             # machine-readable for CI/automation
+hubos-review verify --target ../other  # check a different repo
+hubos-review verify --gate codex-gate  # explicit gate (only value in MVP)
+hubos-review verify --branch develop   # check a non-default branch
+```
+
+### The 8 checks
+
+| # | Check | Severity | Blocks install? |
+|---|---|---|---|
+| **C1** | `gh` is authenticated and token has `repo` + `read:org` scopes | CRITICAL | yes (exit 1) |
+| **C2** | target is a git repo with an origin remote pointing at github.com | CRITICAL | yes (exit 1) |
+| **C3** | the Codex GitHub App (`chatgpt-codex-connector`) is installed on the repo | CRITICAL | yes (exit 1) |
+| **C4** | the protected branch (`main` by default) exists | HIGH | yes (exit 1) |
+| **C5** | the authenticated user has admin permission on the repo | HIGH | yes (exit 1) |
+| **C5b** | no pre-existing `.github/workflows/codex-gate.yml` differs from the bundle | HIGH | yes (exit 1) |
+| **C6** | the bundle version installed in `.aiox/cicd-version` (if any) is current | MEDIUM | no (warning) |
+| **C7** | other workflows in `.github/workflows/` are surfaced (informational) | LOW | no (warning) |
+
+### Exit code policy (severity-based)
+
+| Outcome | Exit code |
+|---|---|
+| All CRITICAL/HIGH `PASS` (MEDIUM/LOW may warn) | 0 |
+| Any CRITICAL or HIGH `FAIL` | 1 |
+| `--gate` value not supported (only `codex-gate` in MVP) | 1 |
+
+`WARN` is reserved for CRITICAL/HIGH checks that detect a likely-OK state without conclusive proof (e.g., C3 on a freshly-authorized repo with zero PR history) — those do **not** flip the exit code; they show amber in the table and proceed.
+
+### Detecting the Codex App (C3) — empirical note
+
+The official GitHub endpoint to list App installations on a repo (`GET /repos/{owner}/{repo}/installation`) requires a JWT signed by the App's private key, which is not available to a user-token CLI like `gh`. As a workaround, `verify` infers the App's presence by scanning the most recent 100 PR review comments and issue comments for the bot login `chatgpt-codex-connector[bot]`. This is empirically validated:
+
+- A repo with the App installed and any prior PR will produce at least one hit → C3 `PASS`.
+- A repo without the App will never produce a hit → C3 `WARN` (not `FAIL`, because a fresh repo with the App authorized but zero PRs would otherwise be a false negative).
+
+The WARN row links to `https://github.com/apps/chatgpt-codex-connector/installations/new` so the user can confirm authorization manually.
+
+### Example output (success path)
+
+```
+$ hubos-review verify
+hubos-review verify — pre-flight check for codex-gate
+Repo: AlfHubPlural/some-repo
+
+CHECK ID  CHECK                           SEV       STATUS  DETAILS
+--------------------------------------------------------------------------------
+C1    gh auth + scopes                CRITICAL  PASS    authenticated as AlfHubPlural (read:org, repo)
+C2    git repo + GitHub remote        CRITICAL  PASS    origin: git@github.com:AlfHubPlural/some-repo.git
+C3    Codex App installed             CRITICAL  PASS    App detected via 17 prior review comment(s) from chatgpt-codex-connector[bot].
+C4    branch 'main' exists            HIGH      PASS    branch 'main' present on AlfHubPlural/some-repo.
+C5    admin access                    HIGH      PASS    user has admin permission on AlfHubPlural/some-repo.
+C5b   codex-gate.yml conflict         HIGH      PASS    no pre-existing workflow file.
+C6    bundle version (outdated)       MEDIUM    PASS    bundle v1 (no prior install detected).
+C7    workflows orphan                LOW       PASS    no other workflows present.
+
+Result: PASS — ready to run 'hubos-review install codex-gate'.
+```
 
 ---
 
