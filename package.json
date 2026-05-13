@@ -1,6 +1,6 @@
 {
   "name": "@hubplural/hubos-review",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Standalone CLI to install portable PR review gates (codex-gate, etc.) on any GitHub repo. Part of the hub-os ecosystem.",
   "type": "module",
   "bin": {

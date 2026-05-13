@@ -11,11 +11,11 @@
 
 ## Status
 
-**v0.2.0 (beta) — Story B landed.** `install` is now a real one-shot installer for the bundled `codex-gate`. Remaining sub-commands (`update`, `status`, `verify`) are still stubs until Stories C and E.
+**v0.3.0 (beta) — Story D landed.** `install codex-gate` now also configures branch protection on the target repo via `gh api` (with TTY auto-detect and graceful degradation when the user lacks admin). `verify`/`update`/`status` will follow in Stories C and E.
 
 | Sub-command | What it does today | Coming in |
 |---|---|---|
-| `install codex-gate` | Copies 3 frozen artifacts + writes `.aiox/cicd-version` | ✅ Story B (v0.2.0) |
+| `install codex-gate` | Copies 3 frozen artifacts + writes `.aiox/cicd-version` + (Story D) configures branch protection | ✅ Story B (v0.2.0) + Story D (v0.3.0) |
 | `update` | Prints stub message, exit 0 | [Story E](#roadmap) |
 | `status` | Prints stub message, exit 0 | [Story E](#roadmap) |
 | `verify` | Prints stub message, exit 0 | [Story C](#roadmap) |
@@ -55,6 +55,9 @@ hubos-review install codex-gate [options]
 | `--dry-run` | off | List every file that would be copied (with `OVERWRITES existing` markers when applicable) and exit. **No filesystem changes are made.** Combine with `--force` to preview a reinstall. |
 | `--target <path>` | CWD | Target a different repo. The path must still be a git repo. |
 | `--bundle-version <slug>` | `v1` | Pick a specific bundle version. Only `v1` ships today. |
+| `--auto-protect` | off | Apply branch protection without prompting (Story D). Useful in CI/automation. Mutually exclusive with `--skip-protection`. |
+| `--skip-protection` | off | Skip branch protection entirely (Story D). The bundle files are still copied. Mutually exclusive with `--auto-protect`. |
+| `--branch <name>` | `main` | Branch to protect (Story D). |
 
 ### Idempotence
 
@@ -99,8 +102,114 @@ No filesystem changes were made.
 
 | Code | When |
 |---|---|
-| 0 | Success, dry-run, or already-installed (idempotence) |
+| 0 | Success, dry-run, already-installed (idempotence), or branch protection skipped/declined |
 | 1 | Target is not a git repo, bundle is missing/corrupt, or unexpected filesystem error |
+| 2 | Conflicting flags: `--auto-protect` AND `--skip-protection` both passed (Story D) |
+
+---
+
+## Branch protection (Story D)
+
+After copying the bundle files, `hubos-review install codex-gate` calls the GitHub API to add `codex-review-gate` to the target repo's required status checks on `main`. The exact endpoint:
+
+```
+GET  /repos/{owner}/{repo}/branches/{branch}/protection
+PUT  /repos/{owner}/{repo}/branches/{branch}/protection
+```
+
+The PUT body is a **merge**, not a replace: any existing required status checks (`gitleaks`, `Vercel`, your CI, etc.) are preserved. Only `codex-review-gate` is added. If it's already present, the PUT is skipped entirely (idempotent).
+
+### Decision matrix
+
+The default behavior depends on whether the CLI is running in an interactive terminal:
+
+| Context | No flag | `--auto-protect` | `--skip-protection` |
+|---|---|---|---|
+| TTY (laptop, real terminal) | Prompt `Y/n` (default Y) | Apply, no prompt | Skip, no prompt |
+| Non-TTY (CI, pipe, script) | **Apply automatically** with explicit log | Apply, no prompt | Skip, no prompt |
+
+The non-TTY auto-apply is what makes the tool usable in CI/automation pipelines without flags. To opt out in CI, pass `--skip-protection` explicitly.
+
+`--auto-protect` + `--skip-protection` together is a usage error and exits **2**.
+
+### Merge behavior — keeping your existing checks
+
+If the target repo already has branch protection with other required checks (e.g. `gitleaks scan`, `Run unit tests`, `Vercel`), they are **preserved**. The new `codex-review-gate` is appended:
+
+```
+Before:  ["gitleaks scan", "Run unit tests"]
+After:   ["gitleaks scan", "Run unit tests", "codex-review-gate"]
+```
+
+If the target repo has no branch protection at all, a minimal configuration is created with sensible defaults (strict status checks, enforce_admins off, no PR review requirement) — empirically aligned with the `hub-os` baseline configuration.
+
+### When you lack admin rights (graceful degradation)
+
+If your GitHub token cannot write branch protection (HTTP 403), the CLI:
+
+1. **Does NOT fail the install** — the bundle files were copied successfully.
+2. Prints the exact `gh api -X PUT ... <<EOF ... EOF` command you can hand to an admin to run.
+3. Exits 0 (you can run it again later when you have admin, or `--skip-protection` to silence the attempt).
+
+### Stamping `.aiox/cicd-version`
+
+When branch protection is applied (or already present), the CLI updates `.aiox/cicd-version` with a `branchProtection` block under the gate:
+
+```json
+{
+  "gates": {
+    "codex-gate": {
+      "bundleVersion": "v1",
+      "branchProtection": {
+        "configured": true,
+        "checkName": "codex-review-gate",
+        "branch": "main",
+        "configuredAt": "2026-05-13T10:00:00.000Z",
+        "previousContexts": ["gitleaks scan", "Run unit tests"],
+        "mergedContexts": ["gitleaks scan", "Run unit tests", "codex-review-gate"]
+      }
+    }
+  }
+}
+```
+
+This is committed to the repo (D-002-8) and lets `hubos-review status` (Story E) audit drift across repos.
+
+### Example — applying protection in CI
+
+```bash
+# In a CI step: install + auto-apply protection, exit 0 on any non-fatal error.
+hubos-review install codex-gate --auto-protect
+```
+
+### Example — applying protection on a custom branch
+
+```bash
+hubos-review install codex-gate --auto-protect --branch=develop
+```
+
+### Example — manual command output (when not admin)
+
+```
+$ hubos-review install codex-gate --auto-protect
+codex-gate v1 installed successfully.
+3 files copied to /Users/you/your-repo.
+.aiox/cicd-version created (remember to git add and commit this file — D-002-8).
+Applying branch protection ('--auto-protect' flag).
+Cannot write branch protection on someorg/repo@main (HTTP 403). You probably do not have admin access. The 3 bundle files are still installed.
+To configure manually, ask an admin to run:
+
+gh api -X PUT /repos/someorg/repo/branches/main/protection \
+  -H "Accept: application/vnd.github+json" \
+  --input - <<'EOF'
+{
+  "required_status_checks": { "strict": true, "contexts": [..., "codex-review-gate"] },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
+EOF
+```
 
 ---
 
@@ -129,9 +238,9 @@ Tracked in the parent epic: [EPIC-CICD-002 — Codex Gate One-Shot Install (Port
 | Story | Title | Status |
 |---|---|---|
 | **CICD-002-A** | Skeleton CLI + 4 stubs | Done (v0.1.0) |
-| **CICD-002-B** | Bundle & versioning of the `codex-gate` package + real `install` | InReview (v0.2.0) |
-| CICD-002-C | Pre-flight check (`gh auth`, Codex App, repo state) | Ready |
-| CICD-002-D | Branch protection via `gh api` + graceful fallback | Ready |
+| **CICD-002-B** | Bundle & versioning of the `codex-gate` package + real `install` | Done (v0.2.0) |
+| **CICD-002-D** | Branch protection via `gh api` + graceful fallback | InReview (v0.3.0) |
+| CICD-002-C | Pre-flight check (`gh auth`, Codex App, repo state) | Ready (parallel with D) |
 | CICD-002-E | `update` + `status` + end-to-end idempotency | Planned |
 
 Each story incrementally fills in real behavior behind the stubs — without changing the public CLI surface defined here.
@@ -147,9 +256,11 @@ hubos-review/
 │   ├── cli.js                # commander program builder + dispatcher
 │   ├── index.js              # public programmatic API
 │   ├── lib/
-│   │   └── bundle.js         # bundle discovery + manifest + SHA-256 helpers
+│   │   ├── bundle.js                # bundle discovery + manifest + SHA-256 helpers
+│   │   ├── branch-protection.js     # Story D: gh api GET/merge/PUT + matrix logic
+│   │   └── tty.js                   # Story D: TTY detection + interactive prompt
 │   └── commands/
-│       ├── install.js        # real (Story B): copies bundle into target
+│       ├── install.js        # real (Story B + D): copies bundle + applies protection
 │       ├── update.js         # stub → Story E
 │       ├── status.js         # stub → Story E
 │       └── verify.js         # stub → Story C
