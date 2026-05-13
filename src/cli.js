@@ -58,7 +58,29 @@ export function buildProgram() {
     .description('Install a PR review gate in the current repo (one-shot setup)')
     .argument('[gate]', 'Gate name to install (e.g., codex-gate)', 'codex-gate')
     .addOption(new Option('--force', 'Overwrite existing installation').default(false))
-    .action((gate, opts) => install({ gate, force: opts.force }));
+    .addOption(
+      new Option('--dry-run', 'Show what would be installed without writing files').default(false),
+    )
+    .addOption(
+      new Option('--target <path>', 'Target repository directory (defaults to CWD)').default(null),
+    )
+    .addOption(
+      new Option('--bundle-version <slug>', 'Bundle version to install (defaults to v1)').default(
+        'v1',
+      ),
+    )
+    .action((gate, opts) => {
+      const rc = install({
+        gate,
+        force: opts.force,
+        dryRun: opts.dryRun,
+        target: opts.target,
+        version: opts.bundleVersion,
+      });
+      if (rc !== 0) {
+        process.exit(rc);
+      }
+    });
 
   // update
   program
